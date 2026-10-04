@@ -1,0 +1,72 @@
+# Every alert here answers yes to one question: will someone have to do
+# something about this, and soon? Each has tests in host.test.yml for when
+# it must fire and for when it must stay quiet.
+#
+# Deliberately absent: CPU above N%, memory above N%, disk above N%. A busy
+# machine is doing its job, and a disk at 85% that has been at 85% for a
+# year needs nobody. Those belong on a dashboard, not in someone's pocket.
+
+groups:
+  - name: host
+    rules:
+      # Losing sight of a machine is the one cause worth alerting on directly:
+      # every other alert for it goes quiet at the same moment.
+      - alert: HostUnreachable
+        expr: up{job="node"} == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.instance }} has not answered a scrape for 2 minutes"
+
+      # A prediction, not a threshold: fires on a disk that will be full
+      # within four hours at the last hour's rate, wherever it is now.
+      # Memory-backed and host-share filesystems cannot fill a disk.
+      - alert: DiskFullWithinFourHours
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{job="node", fstype!~"tmpfs|9p|rootfs"}[1h], 4 * 3600) < 0
+          and node_filesystem_avail_bytes{job="node", fstype!~"tmpfs|9p|rootfs"} / node_filesystem_size_bytes < 0.25
+        for: 15m
+        labels:
+          severity: page
+        annotations:
+          summary: "{{ $labels.mountpoint }} on {{ $labels.instance }} will be full within four hours"
+
+  - name: jobs
+    rules:
+      # Alert on the absence of success, not the presence of failure: a job
+      # that never starts reports no failure at all.
+      # Scoped to one job: Alloy forwards the same metric under a second
+      # job label, and an unscoped rule raised one failure as two alerts.
+      - alert: BackupNotSucceededIn26Hours
+        expr: time() - lab_backup_last_success_timestamp_seconds{job="node"} > 26 * 3600
+        labels:
+          severity: ticket
+        annotations:
+          summary: "The nightly backup last succeeded {{ $value | humanizeDuration }} ago"
+
+      # The metric itself vanishing is the same failure one step earlier: the
+      # job, the file or the collector has stopped, and the rule above can
+      # no longer see anything to compare. Suppressed while the host is
+      # unreachable or the textfile cannot be parsed: each of those is one
+      # failure, and the alert for it already says so.
+      - alert: BackupMetricMissing
+        expr: |
+          absent(lab_backup_last_success_timestamp_seconds{job="node"})
+          and on() up{job="node"} == 1
+          unless on() node_textfile_scrape_error{job="node"} == 1
+        for: 10m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "No backup success timestamp has been reported for 10 minutes"
+
+      # A malformed .prom file takes every metric in it down with it, so the
+      # parse error is the earliest sign the two rules above are about to fire.
+      - alert: TextfileUnreadable
+        expr: node_textfile_scrape_error{job="node"} == 1
+        for: 5m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "node_exporter cannot parse a textfile on {{ $labels.instance }}"

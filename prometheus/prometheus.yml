@@ -2,6 +2,10 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Named, not globbed: host.test.yml sits beside it and is not a rule file.
+rule_files:
+  - /etc/prometheus/rules/host.yml
+
 scrape_configs:
   # The direct scrape: everything node_exporter exposes, unfiltered.
   # This is what a default install would send to a hosted backend.

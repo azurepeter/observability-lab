@@ -1,0 +1,194 @@
+# promtool test rules prometheus/rules/host.test.yml
+#
+# Every alert has a case where it must fire and a case where it must not.
+# A rule with only the first kind of test has not been tested for noise.
+
+rule_files:
+  - host.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ── HostUnreachable ───────────────────────────────────────────────────
+  - name: a host that stops answering pages after two minutes, not before
+    interval: 1m
+    input_series:
+      - series: 'up{job="node", instance="a"}'
+        values: '1x5 0x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: HostUnreachable
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: HostUnreachable
+        exp_alerts:
+          - exp_labels: { severity: page, job: node, instance: a }
+            exp_annotations:
+              summary: "a has not answered a scrape for 2 minutes"
+
+  # ── DiskFullWithinFourHours ───────────────────────────────────────────
+  - name: a full disk that is not growing stays quiet
+    interval: 1m
+    input_series:
+      # 90% used, flat. A static threshold would page on this forever.
+      - series: 'node_filesystem_avail_bytes{job="node", instance="a", mountpoint="/data", fstype="ext4"}'
+        values: '10e9x120'
+      - series: 'node_filesystem_size_bytes{job="node", instance="a", mountpoint="/data", fstype="ext4"}'
+        values: '100e9x120'
+    alert_rule_test:
+      - eval_time: 110m
+        alertname: DiskFullWithinFourHours
+        exp_alerts: []
+
+  - name: a disk filling slowly stays quiet
+    interval: 1m
+    input_series:
+      # 80% used, losing 2 GB an hour: ten hours left, not four.
+      - series: 'node_filesystem_avail_bytes{job="node", instance="a", mountpoint="/data", fstype="ext4"}'
+        values: '20e9-33333333x120'
+      - series: 'node_filesystem_size_bytes{job="node", instance="a", mountpoint="/data", fstype="ext4"}'
+        values: '100e9x120'
+    alert_rule_test:
+      - eval_time: 110m
+        alertname: DiskFullWithinFourHours
+        exp_alerts: []
+
+  - name: a disk filling fast pages
+    interval: 1m
+    input_series:
+      # Starts 80% used, losing 10 GB an hour: under two hours left.
+      - series: 'node_filesystem_avail_bytes{job="node", instance="a", mountpoint="/data", fstype="ext4"}'
+        values: '20e9-166666667x120'
+      - series: 'node_filesystem_size_bytes{job="node", instance="a", mountpoint="/data", fstype="ext4"}'
+        values: '100e9x120'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: DiskFullWithinFourHours
+        exp_alerts:
+          - exp_labels: { severity: page, job: node, instance: a, mountpoint: /data, fstype: ext4 }
+            exp_annotations:
+              summary: "/data on a will be full within four hours"
+
+  - name: a tmpfs filling fast stays quiet
+    interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{job="node", instance="a", mountpoint="/run", fstype="tmpfs"}'
+        values: '20e9-166666667x120'
+      - series: 'node_filesystem_size_bytes{job="node", instance="a", mountpoint="/run", fstype="tmpfs"}'
+        values: '100e9x120'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: DiskFullWithinFourHours
+        exp_alerts: []
+
+  # ── BackupNotSucceededIn26Hours ───────────────────────────────────────
+  - name: a backup that keeps succeeding stays quiet
+    interval: 1h
+    input_series:
+      # Succeeds at 0h and again at 24h.
+      - series: 'lab_backup_last_success_timestamp_seconds{job="node", instance="a"}'
+        values: '0x23 86400x12'
+    alert_rule_test:
+      - eval_time: 30h
+        alertname: BackupNotSucceededIn26Hours
+        exp_alerts: []
+
+  - name: a backup that stops succeeding raises a ticket
+    interval: 1h
+    input_series:
+      # Succeeded once at 0h, then never again. Nothing ever reports a failure.
+      - series: 'lab_backup_last_success_timestamp_seconds{job="node", instance="a"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: BackupNotSucceededIn26Hours
+        exp_alerts: []
+      - eval_time: 27h
+        alertname: BackupNotSucceededIn26Hours
+        exp_alerts:
+          - exp_labels: { severity: ticket, job: node, instance: a }
+            exp_annotations:
+              summary: "The nightly backup last succeeded 1d 3h 0m 0s ago"
+
+  - name: the same stale timestamp arriving through two pipelines raises one ticket
+    interval: 1h
+    input_series:
+      - series: 'lab_backup_last_success_timestamp_seconds{job="node", instance="a"}'
+        values: '0x30'
+      - series: 'lab_backup_last_success_timestamp_seconds{job="node-via-alloy", instance="a"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 27h
+        alertname: BackupNotSucceededIn26Hours
+        exp_alerts:
+          - exp_labels: { severity: ticket, job: node, instance: a }
+            exp_annotations:
+              summary: "The nightly backup last succeeded 1d 3h 0m 0s ago"
+
+  # ── BackupMetricMissing ───────────────────────────────────────────────
+  - name: a timestamp that disappears raises a ticket
+    interval: 1m
+    input_series:
+      - series: 'up{job="node", instance="a"}'
+        values: '1x60'
+      - series: 'lab_backup_last_success_timestamp_seconds{job="node", instance="a"}'
+        values: '0x10 _x50'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: BackupMetricMissing
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: BackupMetricMissing
+        exp_alerts:
+          - exp_labels: { severity: ticket, job: node }
+            exp_annotations:
+              summary: "No backup success timestamp has been reported for 10 minutes"
+
+  - name: a timestamp missing because the host is down raises nothing extra
+    interval: 1m
+    input_series:
+      - series: 'up{job="node", instance="a"}'
+        values: '1x10 0x50'
+      - series: 'lab_backup_last_success_timestamp_seconds{job="node", instance="a"}'
+        values: '0x10 _x50'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: BackupMetricMissing
+        exp_alerts: []
+
+  - name: a timestamp missing because the file is unreadable raises one ticket, not two
+    interval: 1m
+    input_series:
+      - series: 'up{job="node", instance="a"}'
+        values: '1x60'
+      - series: 'node_textfile_scrape_error{job="node", instance="a"}'
+        values: '0x10 1x50'
+      - series: 'lab_backup_last_success_timestamp_seconds{job="node", instance="a"}'
+        values: '0x10 _x50'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: BackupMetricMissing
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: TextfileUnreadable
+        exp_alerts:
+          - exp_labels: { severity: ticket, job: node, instance: a }
+            exp_annotations:
+              summary: "node_exporter cannot parse a textfile on a"
+
+  # ── TextfileUnreadable ────────────────────────────────────────────────
+  - name: a textfile parse error that persists raises a ticket
+    interval: 1m
+    input_series:
+      - series: 'node_textfile_scrape_error{job="node", instance="a"}'
+        values: '0x5 1x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: TextfileUnreadable
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: TextfileUnreadable
+        exp_alerts:
+          - exp_labels: { severity: ticket, job: node, instance: a }
+            exp_annotations:
+              summary: "node_exporter cannot parse a textfile on a"

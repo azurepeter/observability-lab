@@ -55,7 +55,30 @@ One WSL2 machine with 16 logical CPUs, 4 October 2026. Data points per minute ar
 - **Name-based filtering does nothing for cardinality.** The per-user series arrived through Alloy untouched, because they belong to a metric worth keeping. The fix belongs where the metric is written: drop the `user` label, or count per user somewhere other than a time series database.
 - **Most series describe the collector, not the host.** On this machine the largest families were per-CPU counters (16 CPUs × 8 modes) and `node_scrape_collector_*` — two series per collector, describing node_exporter itself.
 
+## Alerts
+
+[`prometheus/rules/host.yml`](prometheus/rules/host.yml) holds five alerts. Each one passed the same test: *will someone have to do something about this, and soon?* The answer is carried as `severity: page` or `severity: ticket`.
+
+| Alert | Severity | Why it exists |
+|---|---|---|
+| `HostUnreachable` | page | Every other alert for the host goes quiet at the same moment |
+| `DiskFullWithinFourHours` | page | Predicts with `predict_linear`; a full disk that is not growing is not an alert |
+| `BackupNotSucceededIn26Hours` | ticket | Alerts on the absence of success; a job that never starts reports no failure |
+| `BackupMetricMissing` | ticket | The rule above goes blind if the timestamp stops arriving; stands down when the host or the file is already alerting |
+| `TextfileUnreadable` | ticket | A half-written `.prom` file takes all of its metrics with it |
+
+Deliberately absent: CPU, memory and disk-percentage thresholds.
+
+```bash
+docker run --rm -v "$PWD/prometheus/rules:/r:ro" -w /r --entrypoint promtool \
+  prom/prometheus:v3.15.0 test rules host.test.yml
+```
+
+[`host.test.yml`](prometheus/rules/host.test.yml) has twelve cases, and every alert has at least one that must fire and one that must stay quiet. Breaking each rule in turn (a static threshold instead of the prediction, a guard or a `for:` removed, a job filter dropped) was caught by a test every time.
+
 ## Things this lab taught me about itself
+
+- **An unscoped rule turned one failure into two alerts.** The backup timestamp reaches Prometheus through both pipelines, so a rule without `job="node"` fired once per pipeline. Every rule now names its job, and a test covers it.
 
 - **`rslave` fails on WSL.** node_exporter's documented `/:/host:ro,rslave` mount is refused because WSL's root is not a shared mount; plain `:ro` works.
 - **`count_over_time()` over every metric fails** with "vector cannot contain metrics with the same labelset": it drops `__name__` first. Prometheus 3's `promql-delayed-name-removal` feature flag fixes it.

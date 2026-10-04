@@ -1,0 +1,39 @@
+// Alloy as the place cost is decided: it scrapes the same node_exporter as
+// Prometheus does, drops series before they leave the machine, and pushes
+// the rest. In a hosted setup the remote_write URL would be the vendor's;
+// here it is the local Prometheus, so both versions can be counted side by side.
+
+prometheus.scrape "node" {
+  targets    = [{"__address__" = "node-exporter:9100"}]
+  job_name   = "node-via-alloy"
+  forward_to = [prometheus.relabel.trim.receiver]
+  // scrape_interval is left at Alloy's default of 60s: one data point per
+  // series per minute, which is what a hosted plan typically includes.
+}
+
+prometheus.relabel "trim" {
+  forward_to = [prometheus.remote_write.local.receiver]
+
+  // Whole families no host dashboard in this lab reads: per-collector
+  // timings, guest CPU, per-CPU softnet and scheduler counters, thermal
+  // cooling devices, clock discipline, and the exporter's own Go runtime.
+  rule {
+    source_labels = ["__name__"]
+    regex         = "node_(scrape_collector_.*|cpu_guest_seconds_total|softnet_.*|schedstat_.*|cooling_device_.*|power_supply_.*|timex_.*)|go_.*"
+    action        = "drop"
+  }
+
+  // Filesystem series for memory-backed and host-share mounts: they cannot
+  // fill a disk, so nothing alerts on them.
+  rule {
+    source_labels = ["__name__", "fstype"]
+    regex         = "node_filesystem_.*;(tmpfs|9p|rootfs)"
+    action        = "drop"
+  }
+}
+
+prometheus.remote_write "local" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}

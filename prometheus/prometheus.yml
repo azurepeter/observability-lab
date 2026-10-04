@@ -1,0 +1,17 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # The direct scrape: everything node_exporter exposes, unfiltered.
+  # This is what a default install would send to a hosted backend.
+  - job_name: node
+    static_configs:
+      - targets: [node-exporter:9100]
+
+  - job_name: prometheus
+    static_configs:
+      - targets: [localhost:9090]
+
+# Alloy scrapes the same node_exporter, drops what nobody queries, and
+# remote-writes the rest here under job="node-via-alloy".

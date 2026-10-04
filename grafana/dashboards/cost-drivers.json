@@ -1,0 +1,38 @@
+{
+  "uid": "cost-drivers",
+  "title": "Cost drivers",
+  "schemaVersion": 39,
+  "time": { "from": "now-1h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "type": "timeseries",
+      "title": "Active series, by job",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "count by (job) ({job=~\"node|node-via-alloy\"})", "legendFormat": "{{job}}" }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "title": "Data points per minute, by job",
+      "description": "Counted from stored samples over a 5-minute window ending a minute ago, so remote-written samples still in flight do not undercount.",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        { "refId": "A", "expr": "sum by (job) (count_over_time({job=~\"node|node-via-alloy\"}[5m] offset 1m)) / 5", "legendFormat": "{{job}}" }
+      ]
+    },
+    {
+      "type": "bargauge",
+      "title": "Largest metric families, unfiltered scrape",
+      "gridPos": { "x": 0, "y": 8, "w": 24, "h": 10 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "options": { "displayMode": "basic", "orientation": "horizontal" },
+      "targets": [
+        { "refId": "A", "expr": "topk(15, count by (__name__) ({job=\"node\"}))", "legendFormat": "{{__name__}}", "instant": true }
+      ]
+    }
+  ]
+}

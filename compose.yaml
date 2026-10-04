@@ -1,0 +1,67 @@
+# Every port binds to 127.0.0.1: this is a lab, not a service.
+# Images are pinned; upgrade them deliberately, one at a time.
+
+services:
+  node-exporter:
+    image: prom/node-exporter:v1.12.1
+    command:
+      - --path.rootfs=/host
+      - --collector.textfile.directory=/textfile
+    pid: host
+    volumes:
+      # node_exporter's docs add rslave here; WSL's root is not a shared
+      # mount, so Docker refuses it. Plain read-only works on both.
+      - /:/host:ro
+      - ./textfile:/textfile:ro
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+      # Alloy pushes here, so its output can be counted beside the direct scrape.
+      - --web.enable-remote-write-receiver
+      # Without this, count_over_time() over every metric fails: it drops
+      # __name__ first, and different metrics then share a label set.
+      - --enable-feature=promql-delayed-name-removal
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - 127.0.0.1:9090:9090
+    restart: unless-stopped
+
+  alloy:
+    image: grafana/alloy:v1.20.1
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+    ports:
+      - 127.0.0.1:12345:12345
+    depends_on: [prometheus, node-exporter]
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:13.2.3
+    environment:
+      # Anonymous admin is acceptable only because the port is loopback-only.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - 127.0.0.1:3000:3000
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
